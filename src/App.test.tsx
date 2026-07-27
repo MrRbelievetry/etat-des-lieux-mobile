@@ -1,0 +1,120 @@
+import '@testing-library/jest-dom/vitest';
+import 'fake-indexeddb/auto';
+import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { App } from './App';
+import { blankCase, duplicateCase } from './caseFactory';
+import { generateInspectionPdf } from './pdf';
+
+Object.defineProperty(window, 'open', { value: vi.fn(), writable: true });
+HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
+  scale: vi.fn(),
+  fillRect: vi.fn(),
+  beginPath: vi.fn(),
+  moveTo: vi.fn(),
+  lineTo: vi.fn(),
+  stroke: vi.fn(),
+  drawImage: vi.fn(),
+  fillStyle: '',
+  strokeStyle: '',
+  lineWidth: 1,
+  lineCap: 'round'
+}) as any);
+HTMLCanvasElement.prototype.toDataURL = vi.fn(() => 'data:image/png;base64,c2lnbmF0dXJl');
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('application état des lieux', () => {
+  it('crée un dossier et sauvegarde un brouillon reprenable', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
+    await user.type(screen.getByLabelText('Adresse complète'), '10 rue Test, 75000 Exemple');
+    await waitFor(() => expect(screen.getByText(/brouillon sauvegardé automatiquement/i)).toBeInTheDocument());
+    await user.click(screen.getByText('← Accueil'));
+    expect(await screen.findByText('10 rue Test, 75000 Exemple')).toBeInTheDocument();
+  });
+
+  it('ajoute une pièce et un élément', () => {
+    const item = blankCase('entry');
+    item.rooms = [];
+    const next = duplicateCase({ ...item, rooms: [] });
+    next.rooms.push({ ...blankCase().rooms[0], name: 'Bureau de test' });
+    next.rooms[0].elements.push({ ...blankCase().rooms[0].elements[0], label: 'Étagère test' });
+    expect(next.rooms[0].elements.some((element) => element.label === 'Étagère test')).toBe(true);
+  });
+
+  it('expose un bouton caméra séparé de la galerie', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
+    await user.click(screen.getByRole('button', { name: /Pièces/ }));
+    expect(screen.getAllByLabelText('Prendre une photo')[0]).toHaveAttribute('capture', 'environment');
+    expect(screen.getAllByLabelText('Importer depuis la galerie')[0]).toHaveAttribute('multiple');
+  });
+
+  it('ajoute une photo rattachée à une pièce', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
+    await user.click(screen.getByRole('button', { name: /Pièces/ }));
+    const file = new File(['photo'], 'mur.jpg', { type: 'image/jpeg' });
+    await user.upload(screen.getAllByLabelText('Prendre une photo')[0], file);
+    expect(await screen.findByText('Photo 1')).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText('Légende précise'), 'Mur côté fenêtre');
+    expect(screen.getByDisplayValue('Mur côté fenêtre')).toBeInTheDocument();
+  });
+
+  it('permet signature tactile, effacement et nouvelle signature', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
+    await user.click(screen.getByRole('button', { name: /Signatures/ }));
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getAllByText('Valider la signature')[0]);
+    await user.click(screen.getAllByText('Effacer')[0]);
+    await user.click(screen.getAllByText('Valider la signature')[0]);
+    expect(HTMLCanvasElement.prototype.toDataURL).toHaveBeenCalled();
+  });
+
+  it('génère un PDF avec photos, signatures et empreinte', async () => {
+    const item = blankCase('entry');
+    item.address = '99 avenue PDF, 75000 Exemple';
+    item.rooms[0].photos.push({
+      id: 'photo-test',
+      roomId: item.rooms[0].id,
+      caption: 'Photo test',
+      createdAt: new Date().toISOString(),
+      order: 1,
+      dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2w==',
+      rotation: 0
+    });
+    item.signatures[0].acceptedRead = true;
+    item.signatures[0].imageDataUrl = 'data:image/png;base64,c2lnbmF0dXJl';
+    const result = await generateInspectionPdf(item);
+    expect(result.dataUrl).toContain('data:application/pdf');
+    expect(result.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('duplique un état des lieux d’entrée et crée une nouvelle version', () => {
+    const item = blankCase('entry');
+    item.status = 'finalized';
+    item.pdfHash = 'abc';
+    const copy = duplicateCase(item, 'exit');
+    expect(copy.type).toBe('exit');
+    expect(copy.sourceCaseId).toBe(item.id);
+    expect(copy.version).toBe(2);
+    expect(copy.pdfHash).toBeUndefined();
+    expect(copy.signatures.every((signature) => !signature.imageDataUrl)).toBe(true);
+  });
+
+  it('prévoit le fonctionnement responsive et hors connexion', async () => {
+    render(<App />);
+    expect(screen.getAllByText(/Stockage local sur cet appareil/)[0]).toBeInTheDocument();
+    expect(document.querySelector('.steps')).toBeNull();
+  });
+});

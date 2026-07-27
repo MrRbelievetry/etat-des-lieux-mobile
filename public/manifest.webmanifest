@@ -1,0 +1,12 @@
+{
+  "name": "État des lieux local",
+  "short_name": "EDL Local",
+  "description": "Créer un état des lieux locatif avec photos, signatures et PDF, sans serveur obligatoire.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f3ec",
+  "theme_color": "#1f6f65",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
