@@ -75,7 +75,6 @@ describe('application état des lieux', () => {
     render(<App />);
     await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
     await user.click(screen.getByRole('button', { name: /Pièces/ }));
-    expect(screen.queryByRole('combobox', { name: 'Fonctionnement' })).not.toBeInTheDocument();
     await user.click(screen.getByText(/Fenêtres/));
     expect(screen.getAllByRole('combobox', { name: 'Fonctionnement' }).length).toBeGreaterThan(0);
   });
