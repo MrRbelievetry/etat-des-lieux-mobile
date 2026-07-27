@@ -19,12 +19,61 @@ async function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<string> {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        resolve(canvas.toDataURL('image/jpeg', quality));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsDataURL(blob);
+    }, 'image/jpeg', quality);
+  });
+}
+
+export async function compressImageFile(file: File): Promise<{ dataUrl: string; width?: number; height?: number; compressedBytes?: number }> {
+  const original = await fileToDataUrl(file);
+  const image = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = reject;
+  });
+  image.src = original;
+
+  try {
+    await loaded;
+  } catch {
+    return { dataUrl: original, compressedBytes: file.size };
+  }
+
+  const maxSide = 900;
+  const ratio = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * ratio));
+  const height = Math.max(1, Math.round(image.naturalHeight * ratio));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return { dataUrl: original, width, height, compressedBytes: file.size };
+  context.drawImage(image, 0, 0, width, height);
+
+  let quality = 0.5;
+  let dataUrl = await canvasToJpeg(canvas, quality);
+  while (dataUrl.length > 68000 && quality > 0.28) {
+    quality -= 0.06;
+    dataUrl = await canvasToJpeg(canvas, quality);
+  }
+  return { dataUrl, width, height, compressedBytes: Math.round((dataUrl.length * 3) / 4) };
+}
+
 export function PhotoInput({ photos, onChange, roomId, elementId, readonly }: Props) {
   async function addFiles(files: FileList | null) {
     if (!files || readonly) return;
     const accepted = [...files].filter((file) => file.type.startsWith('image/') && file.size <= 12 * 1024 * 1024);
     const next = await Promise.all(accepted.map(async (file, index) => {
-      const dataUrl = await fileToDataUrl(file);
+      const compressed = await compressImageFile(file);
       return {
         id: crypto.randomUUID(),
         roomId,
@@ -32,9 +81,13 @@ export function PhotoInput({ photos, onChange, roomId, elementId, readonly }: Pr
         caption: '',
         createdAt: new Date().toISOString(),
         order: photos.length + index + 1,
-        dataUrl,
-        hash: await sha256DataUrl(dataUrl),
-        rotation: 0 as const
+        dataUrl: compressed.dataUrl,
+        hash: await sha256DataUrl(compressed.dataUrl),
+        rotation: 0 as const,
+        originalBytes: file.size,
+        compressedBytes: compressed.compressedBytes,
+        width: compressed.width,
+        height: compressed.height
       };
     }));
     onChange([...photos, ...next]);
@@ -82,6 +135,7 @@ export function PhotoInput({ photos, onChange, roomId, elementId, readonly }: Pr
         ))}
       </div>
       <p className="hint">Sur mobile compatible, “Prendre une photo” demande la caméra arrière au moment utile. En cas de refus, utilisez l’import depuis la galerie.</p>
+      <p className="hint">Les images sont automatiquement redimensionnées et compressées pour produire un PDF léger, sans filtre visuel.</p>
     </div>
   );
 }

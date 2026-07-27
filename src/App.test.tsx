@@ -1,12 +1,13 @@
 import '@testing-library/jest-dom/vitest';
 import 'fake-indexeddb/auto';
-import { render, screen, waitFor } from '@testing-library/react';
-import { cleanup } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { blankCase, duplicateCase } from './caseFactory';
-import { generateInspectionPdf } from './pdf';
+import { makeElement, makeRoom } from './constants';
+import { buildElementLines, formatFrenchDate, generateInspectionPdf, isMeterFilled, isTenantNamed } from './pdf';
+import { validateCase } from './validation';
 
 Object.defineProperty(window, 'open', { value: vi.fn(), writable: true });
 HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
@@ -69,16 +70,21 @@ describe('application état des lieux', () => {
     expect(screen.getByDisplayValue('Mur côté fenêtre')).toBeInTheDocument();
   });
 
-  it('permet signature tactile, effacement et nouvelle signature', async () => {
+  it('affiche le fonctionnement seulement pour les équipements testables', async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
-    await user.click(screen.getByRole('button', { name: /Signatures/ }));
-    await user.click(screen.getAllByRole('checkbox')[0]);
-    await user.click(screen.getAllByText('Valider la signature')[0]);
-    await user.click(screen.getAllByText('Effacer')[0]);
-    await user.click(screen.getAllByText('Valider la signature')[0]);
-    expect(HTMLCanvasElement.prototype.toDataURL).toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /Pièces/ }));
+    expect(screen.queryByRole('combobox', { name: 'Fonctionnement' })).not.toBeInTheDocument();
+    await user.click(screen.getByText(/Fenêtres/));
+    expect(screen.getByRole('combobox', { name: 'Fonctionnement' })).toBeInTheDocument();
+  });
+
+  it('prévoit les appareils complets dans la cuisine', () => {
+    const kitchen = makeRoom('Cuisine');
+    expect(kitchen.elements.some((element) => element.label === 'Réfrigérateur')).toBe(true);
+    expect(kitchen.elements.some((element) => element.label === 'Four')).toBe(true);
+    expect(kitchen.elements.find((element) => element.label === 'Four')?.isTestable).toBe(true);
   });
 
   it('génère un PDF avec photos, signatures et empreinte', async () => {
@@ -91,13 +97,53 @@ describe('application état des lieux', () => {
       createdAt: new Date().toISOString(),
       order: 1,
       dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2w==',
-      rotation: 0
+      rotation: 0,
+      compressedBytes: 32000,
+      width: 900,
+      height: 650
     });
     item.signatures[0].acceptedRead = true;
     item.signatures[0].imageDataUrl = 'data:image/png;base64,c2lnbmF0dXJl';
     const result = await generateInspectionPdf(item);
     expect(result.dataUrl).toContain('data:application/pdf');
     expect(result.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('prépare des lignes PDF sans champs vides ni fonctionnement sur les surfaces', () => {
+    const wall = makeElement('Murs');
+    const oven = makeElement('Four');
+    expect(buildElementLines(wall, 'entry').join('\n')).not.toContain('Fonctionnement');
+    expect(buildElementLines(wall, 'entry').join('\n')).not.toContain('description : -');
+    expect(buildElementLines(oven, 'entry').join('\n')).toContain('Fonctionnement');
+  });
+
+  it('filtre locataires vides, compteurs vides et dates françaises', () => {
+    const item = blankCase('entry');
+    expect(isTenantNamed(item.tenants[0])).toBe(false);
+    expect(isMeterFilled(item.meters[0])).toBe(false);
+    expect(formatFrenchDate('2026-07-27')).toContain('2026');
+  });
+
+  it('signale les appareils sans état intérieur ou extérieur', () => {
+    const item = blankCase('entry');
+    const kitchen = makeRoom('Cuisine');
+    kitchen.elements = [makeElement('Réfrigérateur')];
+    item.rooms = [kitchen];
+    expect(validateCase(item).some((issue) => issue.message.includes('état extérieur ou intérieur'))).toBe(true);
+  });
+
+  it('permet signature tactile, effacement et nouvelle signature', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Nouvel état des lieux d’entrée/ }));
+    await user.click(screen.getByRole('button', { name: /Parties/ }));
+    await user.type(screen.getAllByLabelText('Nom')[0], 'Bailleur Test');
+    await user.click(screen.getByRole('button', { name: /Signatures/ }));
+    await user.click(screen.getAllByRole('checkbox')[0]);
+    await user.click(screen.getAllByText('Valider la signature')[0]);
+    await user.click(screen.getAllByText('Effacer')[0]);
+    await user.click(screen.getAllByText('Valider la signature')[0]);
+    expect(HTMLCanvasElement.prototype.toDataURL).toHaveBeenCalled();
   });
 
   it('duplique un état des lieux d’entrée et crée une nouvelle version', () => {
@@ -112,7 +158,7 @@ describe('application état des lieux', () => {
     expect(copy.signatures.every((signature) => !signature.imageDataUrl)).toBe(true);
   });
 
-  it('prévoit le fonctionnement responsive et hors connexion', async () => {
+  it('prévoit le fonctionnement responsive et hors connexion', () => {
     render(<App />);
     expect(screen.getAllByText(/Stockage local sur cet appareil/)[0]).toBeInTheDocument();
     expect(document.querySelector('.steps')).toBeNull();

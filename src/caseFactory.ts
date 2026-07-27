@@ -1,4 +1,4 @@
-import { keyKinds, makeKey, makeMeter, makeRoom, meterKinds } from './constants';
+import { keyKinds, makeKey, makeMeter, makeRoom, meterKinds, withElementDefaults } from './constants';
 import type { InspectionCase, InspectionType, Signature } from './types';
 
 const today = new Date();
@@ -42,7 +42,7 @@ export function blankCase(type: InspectionType = 'entry'): InspectionCase {
     keys: keyKinds.slice(0, 6).map(makeKey),
     rooms: ['Entrée', 'Séjour', 'Cuisine', 'Chambre', 'Salle de bains', 'WC'].map(makeRoom),
     observations: { lessor: '', tenant: '', disagreement: '', reservations: '', untested: '', plannedWorks: '', extra: '' },
-    signatures,
+    signatures
   };
 }
 
@@ -55,6 +55,17 @@ export function demoCase(): InspectionCase {
   draft.tenants[0] = { ...draft.tenants[0], firstName: 'Alex', lastName: 'Locataire-Test', phone: '0200000000', email: 'alex.locataire@example.test' };
   draft.rooms[1].elements[1].condition = 'état moyen';
   draft.rooms[1].elements[1].description = 'Deux trous d’environ 5 mm sur le mur côté fenêtre, à environ 1 mètre du sol.';
+  const kitchen = draft.rooms.find((room) => room.name === 'Cuisine');
+  const fridge = kitchen?.elements.find((element) => element.label === 'Réfrigérateur');
+  if (fridge) {
+    fridge.brand = 'Marque Démo';
+    fridge.model = 'Froid 2000';
+    fridge.color = 'Blanc';
+    fridge.exteriorCondition = 'bon état';
+    fridge.interiorCondition = 'bon état';
+    fridge.cleanliness = 'Propre';
+    fridge.functionStatus = 'fonctionne';
+  }
   draft.observations.lessor = 'Dossier fictif fourni pour tester l’application.';
   return draft;
 }
@@ -71,6 +82,7 @@ export function duplicateCase(source: InspectionCase, type = source.type): Inspe
   copy.finalizedAt = undefined;
   copy.pdfDataUrl = undefined;
   copy.pdfHash = undefined;
+  copy.rooms = copy.rooms.map((room) => ({ ...room, elements: room.elements.map(withElementDefaults) }));
   copy.signatures = copy.signatures.map((signature) => ({ ...signature, id: crypto.randomUUID(), acceptedRead: false, refused: false, imageDataUrl: undefined, signedAt: undefined }));
   return copy;
 }

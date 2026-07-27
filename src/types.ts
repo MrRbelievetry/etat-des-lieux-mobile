@@ -19,6 +19,17 @@ export type Evolution =
   | 'élément remplacé'
   | 'élément manquant'
   | 'non comparable';
+export type ElementCategory =
+  | 'surface'
+  | 'ouverture'
+  | 'electricite'
+  | 'plomberie'
+  | 'chauffage'
+  | 'ventilation'
+  | 'mobilier'
+  | 'electromenager'
+  | 'autre';
+export type FunctionStatus = 'fonctionne' | 'anomalie constatée' | 'non testé' | 'test impossible' | 'non concerné';
 
 export interface Person {
   id: string;
@@ -53,6 +64,10 @@ export interface Photo {
   dataUrl: string;
   hash?: string;
   rotation: 0 | 90 | 180 | 270;
+  originalBytes?: number;
+  compressedBytes?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface Meter {
@@ -83,6 +98,18 @@ export interface RoomElement {
   condition: ElementCondition;
   description: string;
   tested: 'oui' | 'non' | 'non concerné';
+  isTestable?: boolean;
+  category?: ElementCategory;
+  functionStatus?: FunctionStatus;
+  brand?: string;
+  model?: string;
+  serialNumber?: string;
+  color?: string;
+  exteriorCondition?: ElementCondition | '';
+  interiorCondition?: ElementCondition | '';
+  cleanliness?: string;
+  accessories?: string;
+  defectDescription?: string;
   observation: string;
   photos: Photo[];
   entryCondition?: ElementCondition;

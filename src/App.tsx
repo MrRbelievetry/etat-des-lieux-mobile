@@ -1,18 +1,22 @@
 import { Download, FileCheck, FilePlus2, Printer, Save, Search, Share2, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { blankCase, demoCase, duplicateCase } from './caseFactory';
-import { conditionOptions, makeElement, makeKey, makeMeter, makeRoom, roomNames } from './constants';
+import { conditionOptions, functionStatusOptions, makeElement, makeKey, makeMeter, makeRoom, roomNames, withElementDefaults } from './constants';
 import { generateInspectionPdf } from './pdf';
 import { PhotoInput } from './PhotoInput';
 import { deleteCase, downloadDataUrl, downloadText, exportCaseJson, listCases, saveCase } from './storage';
 import { SignaturePad } from './SignaturePad';
-import type { AccessKey, InspectionCase, Meter, Person, Room } from './types';
+import type { AccessKey, InspectionCase, InspectionType, Meter, Person, Room, RoomElement } from './types';
 import { validateCase } from './validation';
 
 const steps = ['Informations générales', 'Parties', 'Compteurs et clés', 'Pièces', 'Synthèse', 'Signatures', 'PDF'];
 
 function nameOf(person: Person) {
   return `${person.firstName} ${person.lastName}`.trim();
+}
+
+function namedPeople(people: Person[]) {
+  return people.filter((person) => nameOf(person));
 }
 
 export function App() {
@@ -51,16 +55,9 @@ export function App() {
     setCurrent({ ...current, ...patch, updatedAt: new Date().toISOString() });
   }
 
-  function start(type: 'entry' | 'exit') {
-    const item = blankCase(type);
-    setCurrent(item);
+  function start(type: InspectionType) {
+    setCurrent(blankCase(type));
     setStep(0);
-  }
-
-  async function persist(item = current) {
-    if (!item) return;
-    await saveCase(item);
-    await refresh();
   }
 
   async function finalize() {
@@ -75,11 +72,8 @@ export function App() {
 
   async function sharePdf() {
     if (!current?.pdfDataUrl) return;
-    if ('share' in navigator) {
-      await navigator.share({ title: current.title, text: `${current.title} - ${current.address}` }).catch(() => undefined);
-    } else {
-      downloadDataUrl(current.pdfDataUrl, `${current.id}.pdf`);
-    }
+    if ('share' in navigator) await navigator.share({ title: current.title, text: `${current.title} - ${current.address}` }).catch(() => undefined);
+    else downloadDataUrl(current.pdfDataUrl, `${current.id}.pdf`);
   }
 
   const filtered = useMemo(() => cases.filter((item) => `${item.address} ${item.tenants.map(nameOf).join(' ')}`.toLowerCase().includes(query.toLowerCase())), [cases, query]);
@@ -121,40 +115,19 @@ export function App() {
           <h1>{current.title || 'État des lieux'}</h1>
           <p className="eyebrow">{current.id} · version {current.version} · {readonly ? 'finalisé en lecture seule' : 'brouillon sauvegardé automatiquement'} · {online ? 'en ligne' : 'hors connexion'}</p>
         </div>
-        {!readonly && <button className="button secondary" onClick={() => void persist()}><Save size={18} /> Enregistrer</button>}
+        {!readonly && <button className="button secondary" onClick={() => void saveCase(current).then(refresh)}><Save size={18} /> Enregistrer</button>}
       </header>
       <nav className="steps" aria-label="Étapes">
-        {steps.map((label, index) => (
-          <button key={label} className={index === step ? 'active' : ''} onClick={() => setStep(index)}>
-            <span>{index + 1}</span>{label}
-          </button>
-        ))}
+        {steps.map((label, index) => <button key={label} className={index === step ? 'active' : ''} onClick={() => setStep(index)}><span>{index + 1}</span>{label}</button>)}
       </nav>
       <div className="progress"><span style={{ width: `${((step + 1) / steps.length) * 100}%` }} /></div>
-
       {step === 0 && <General item={current} update={update} readonly={readonly} />}
       {step === 1 && <Parties item={current} update={update} readonly={readonly} />}
       {step === 2 && <MetersKeys item={current} update={update} readonly={readonly} />}
       {step === 3 && <Rooms item={current} update={update} readonly={readonly} />}
       {step === 4 && <Summary item={current} issues={issues} go={setStep} />}
       {step === 5 && <Signatures item={current} update={update} readonly={readonly} />}
-      {step === 6 && (
-        <section className="panel">
-          <h2>Génération et partage</h2>
-          <p className="hint">Le PDF final est généré dans le navigateur, avec photos, signatures, mentions et empreinte SHA-256. Après finalisation, le dossier devient non modifiable silencieusement.</p>
-          {!readonly && <button className="button primary large" onClick={() => void finalize()}><FileCheck /> Finaliser et générer le PDF</button>}
-          {current.pdfDataUrl && (
-            <div className="homeActions">
-              <button className="button secondary" onClick={() => downloadDataUrl(current.pdfDataUrl!, `${current.id}.pdf`)}><Download size={18} /> Télécharger le PDF</button>
-              <button className="button secondary" onClick={() => window.print()}><Printer size={18} /> Imprimer</button>
-              <button className="button secondary" onClick={() => void sharePdf()}><Share2 size={18} /> Partager</button>
-              <button className="button secondary" onClick={() => downloadText(exportCaseJson(current), `${current.id}-dossier.json`)}><Download size={18} /> Exporter le dossier</button>
-              <button className="button secondary" onClick={() => setCurrent(duplicateCase(current, current.type))}><FilePlus2 size={18} /> Créer une nouvelle version</button>
-            </div>
-          )}
-          {current.pdfHash && <p className="seal">Empreinte SHA-256 du PDF : <code>{current.pdfHash}</code></p>}
-        </section>
-      )}
+      {step === 6 && <PdfStep item={current} readonly={readonly} finalize={finalize} sharePdf={sharePdf} setCurrent={setCurrent} />}
       <footer className="wizardFooter">
         <button className="button secondary" disabled={step === 0} onClick={() => setStep(step - 1)}>Précédent</button>
         <button className="button primary" disabled={step === steps.length - 1} onClick={() => setStep(step + 1)}>Suivant</button>
@@ -172,7 +145,7 @@ function CaseList({ title, items, onOpen, onDuplicate, onDelete }: { title: stri
         {items.map((item) => (
           <article className="caseCard" key={item.id}>
             <strong>{item.address || 'Adresse non renseignée'}</strong>
-            <span>{item.title} · {item.tenants.map(nameOf).join(', ') || 'Locataire non renseigné'}</span>
+            <span>{item.title} · {namedPeople(item.tenants).map(nameOf).join(', ') || 'Locataire non renseigné'}</span>
             <small>{item.id} · v{item.version}</small>
             <div className="miniActions">
               <button onClick={() => onOpen(item)}>Ouvrir</button>
@@ -228,7 +201,12 @@ function Parties({ item, update, readonly }: { item: InspectionCase; update: (pa
       <h3>Bailleur</h3>
       <PersonFields person={item.lessor} readonly={readonly} onChange={(lessor) => update({ lessor: lessor as InspectionCase['lessor'], signatures: item.signatures.map((signature) => signature.personId === lessor.id ? { ...signature, name: nameOf(lessor) } : signature) })} address />
       <h3>Locataires</h3>
-      {item.tenants.map((tenant, index) => <PersonFields key={tenant.id} person={tenant} readonly={readonly} onChange={(next) => setTenant(index, next)} exit={item.type === 'exit'} />)}
+      {item.tenants.map((tenant, index) => (
+        <div className="person" key={tenant.id}>
+          <PersonFields person={tenant} readonly={readonly} onChange={(next) => setTenant(index, next)} exit={item.type === 'exit'} />
+          {!readonly && !nameOf(tenant) && item.tenants.length > 1 && <button className="button secondary" onClick={() => update({ tenants: item.tenants.filter((value) => value.id !== tenant.id), signatures: item.signatures.filter((signature) => signature.personId !== tenant.id) })}>Supprimer ce locataire vide</button>}
+        </div>
+      ))}
       {!readonly && <button className="button secondary" onClick={() => {
         const tenant = { id: crypto.randomUUID(), civility: 'M.', firstName: '', lastName: '', phone: '', email: '', newAddress: '' };
         update({ tenants: [...item.tenants, tenant], signatures: [...item.signatures, { id: crypto.randomUUID(), personId: tenant.id, name: '', role: 'Locataire', acceptedRead: false, refused: false, refusalReason: '', observation: '' }] });
@@ -292,9 +270,7 @@ function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patc
   return (
     <section className="panel">
       <h2>Pièces</h2>
-      <div className="roomTabs">
-        {item.rooms.map((value) => <button className={value.id === room?.id ? 'active' : ''} key={value.id} onClick={() => setSelected(value.id)}>{value.name}</button>)}
-      </div>
+      <div className="roomTabs">{item.rooms.map((value) => <button className={value.id === room?.id ? 'active' : ''} key={value.id} onClick={() => setSelected(value.id)}>{value.name}</button>)}</div>
       {!readonly && (
         <div className="photoActions">
           <select aria-label="Pièce à ajouter" onChange={(event) => { if (event.target.value) update({ rooms: [...item.rooms, makeRoom(event.target.value)] }); }}>
@@ -313,24 +289,43 @@ function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patc
           <label><span>Observations générales</span><textarea disabled={readonly} value={room.observations} onChange={(event) => setRoom({ ...room, observations: event.target.value })} /></label>
           <PhotoInput photos={room.photos} roomId={room.id} readonly={readonly} onChange={(photos) => setRoom({ ...room, photos })} />
           <h3>Éléments</h3>
-          {room.elements.map((element) => (
-            <details key={element.id}>
-              <summary>{element.label} · {element.condition}</summary>
-              <div className="grid two">
-                <Field label="Désignation" value={element.label} readonly={readonly} onChange={(label) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, label } : value) })} />
-                <label><span>État</span><select disabled={readonly} value={element.condition} onChange={(event) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, condition: event.target.value as typeof element.condition } : value) })}>{conditionOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
-                <label><span>Description précise</span><textarea required={['état moyen', 'mauvais état', 'hors service'].includes(element.condition)} disabled={readonly} value={element.description} onChange={(event) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, description: event.target.value } : value) })} placeholder="Ex. Deux trous d’environ 5 mm sur le mur côté fenêtre, à environ 1 mètre du sol." /></label>
-                <label><span>Fonctionnement testé</span><select disabled={readonly} value={element.tested} onChange={(event) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, tested: event.target.value as typeof element.tested } : value) })}><option>oui</option><option>non</option><option>non concerné</option></select></label>
-                <Field label="Observations" value={element.observation} readonly={readonly} onChange={(observation) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, observation } : value) })} />
-              </div>
-              {item.type === 'exit' && <Field label="Observations de sortie" value={element.exitObservation || ''} readonly={readonly} onChange={(exitObservation) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, exitObservation } : value) })} />}
-              <PhotoInput photos={element.photos} roomId={room.id} elementId={element.id} readonly={readonly} onChange={(photos) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? { ...value, photos } : value) })} />
-            </details>
-          ))}
+          {room.elements.map((element) => <ElementEditor key={element.id} element={element} room={room} inspectionType={item.type} readonly={readonly} setRoom={setRoom} />)}
           {!readonly && <button className="button secondary" onClick={() => setRoom({ ...room, elements: [...room.elements, makeElement('Autre équipement')] })}>Ajouter un élément</button>}
         </article>
       )}
     </section>
+  );
+}
+
+function ElementEditor({ element: rawElement, room, inspectionType, readonly, setRoom }: { element: RoomElement; room: Room; inspectionType: InspectionType; readonly?: boolean; setRoom: (room: Room) => void }) {
+  const element = withElementDefaults(rawElement);
+  const setElement = (patch: Partial<RoomElement>) => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? withElementDefaults({ ...element, ...patch }) : value) });
+  return (
+    <details>
+      <summary>{element.label} · {element.condition}{element.isTestable && element.functionStatus ? ` · ${element.functionStatus}` : ''}</summary>
+      <div className="grid two">
+        <Field label="Désignation" value={element.label} readonly={readonly} onChange={(label) => setElement({ label })} />
+        <label><span>État</span><select disabled={readonly} value={element.condition} onChange={(event) => setElement({ condition: event.target.value as typeof element.condition })}>{conditionOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+        {element.category === 'electromenager' && (
+          <>
+            <Field label="Marque" value={element.brand || ''} readonly={readonly} onChange={(brand) => setElement({ brand })} />
+            <Field label="Modèle" value={element.model || ''} readonly={readonly} onChange={(model) => setElement({ model })} />
+            <Field label="Numéro de série" value={element.serialNumber || ''} readonly={readonly} onChange={(serialNumber) => setElement({ serialNumber })} />
+            <Field label="Couleur" value={element.color || ''} readonly={readonly} onChange={(color) => setElement({ color })} />
+            <label><span>État extérieur</span><select disabled={readonly} value={element.exteriorCondition || ''} onChange={(event) => setElement({ exteriorCondition: event.target.value as typeof element.exteriorCondition })}><option value="">Non renseigné</option>{conditionOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+            <label><span>État intérieur</span><select disabled={readonly} value={element.interiorCondition || ''} onChange={(event) => setElement({ interiorCondition: event.target.value as typeof element.interiorCondition })}><option value="">Non renseigné</option>{conditionOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+            <Field label="Propreté" value={element.cleanliness || ''} readonly={readonly} onChange={(cleanliness) => setElement({ cleanliness })} />
+            <Field label="Accessoires présents" value={element.accessories || ''} readonly={readonly} onChange={(accessories) => setElement({ accessories })} />
+          </>
+        )}
+        <label><span>Description précise</span><textarea required={['état moyen', 'mauvais état', 'hors service'].includes(element.condition)} disabled={readonly} value={element.description} onChange={(event) => setElement({ description: event.target.value })} placeholder="Ex. Deux trous d’environ 5 mm sur le mur côté fenêtre, à environ 1 mètre du sol." /></label>
+        {element.isTestable && <label><span>Fonctionnement</span><select disabled={readonly} value={element.functionStatus || 'non testé'} onChange={(event) => setElement({ functionStatus: event.target.value as typeof element.functionStatus })}>{functionStatusOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}
+        {element.category === 'electromenager' && <Field label="Description du défaut" value={element.defectDescription || ''} readonly={readonly} onChange={(defectDescription) => setElement({ defectDescription })} />}
+        <Field label="Observations" value={element.observation} readonly={readonly} onChange={(observation) => setElement({ observation })} />
+      </div>
+      {inspectionType === 'exit' && <Field label="Observations de sortie" value={element.exitObservation || ''} readonly={readonly} onChange={(exitObservation) => setElement({ exitObservation })} />}
+      <PhotoInput photos={element.photos} roomId={room.id} elementId={element.id} readonly={readonly} onChange={(photos) => setElement({ photos })} />
+    </details>
   );
 }
 
@@ -341,7 +336,7 @@ function Summary({ item, issues, go }: { item: InspectionCase; issues: { section
       <h2>Synthèse avant signature</h2>
       <div className="summaryGrid">
         <button onClick={() => go(0)}>Logement<br /><strong>{item.address || 'Adresse manquante'}</strong></button>
-        <button onClick={() => go(1)}>Parties<br /><strong>{nameOf(item.lessor)} / {item.tenants.map(nameOf).join(', ')}</strong></button>
+        <button onClick={() => go(1)}>Parties<br /><strong>{nameOf(item.lessor)} / {namedPeople(item.tenants).map(nameOf).join(', ')}</strong></button>
         <button onClick={() => go(2)}>Compteurs<br /><strong>{item.meters.length} compteur(s)</strong></button>
         <button onClick={() => go(3)}>Pièces<br /><strong>{item.rooms.length} pièce(s)</strong></button>
       </div>
@@ -360,7 +355,27 @@ function Signatures({ item, update, readonly }: { item: InspectionCase; update: 
     <section className="panel">
       <h2>Signatures</h2>
       <p className="hint">Cette signature manuscrite sur écran matérialise la prise de connaissance du document. Elle n’est pas présentée comme une signature électronique qualifiée ou certifiée.</p>
-      {item.signatures.map((signature) => <SignaturePad key={signature.id} signature={signature} readonly={readonly} onChange={(next) => update({ signatures: item.signatures.map((value) => value.id === next.id ? next : value) })} />)}
+      {item.signatures.filter((signature) => signature.name.trim()).map((signature) => <SignaturePad key={signature.id} signature={signature} readonly={readonly} onChange={(next) => update({ signatures: item.signatures.map((value) => value.id === next.id ? next : value) })} />)}
+    </section>
+  );
+}
+
+function PdfStep({ item, readonly, finalize, sharePdf, setCurrent }: { item: InspectionCase; readonly?: boolean; finalize: () => Promise<void>; sharePdf: () => Promise<void>; setCurrent: (item: InspectionCase) => void }) {
+  return (
+    <section className="panel">
+      <h2>Génération et partage</h2>
+      <p className="hint">Le PDF final est généré dans le navigateur. Les photos sont compressées et les rubriques vides sont masquées.</p>
+      {!readonly && <button className="button primary large" onClick={() => void finalize()}><FileCheck /> Finaliser et générer le PDF</button>}
+      {item.pdfDataUrl && (
+        <div className="homeActions">
+          <button className="button secondary" onClick={() => downloadDataUrl(item.pdfDataUrl!, `${item.id}.pdf`)}><Download size={18} /> Télécharger le PDF</button>
+          <button className="button secondary" onClick={() => window.print()}><Printer size={18} /> Imprimer</button>
+          <button className="button secondary" onClick={() => void sharePdf()}><Share2 size={18} /> Partager</button>
+          <button className="button secondary" onClick={() => downloadText(exportCaseJson(item), `${item.id}-dossier.json`)}><Download size={18} /> Exporter le dossier</button>
+          <button className="button secondary" onClick={() => setCurrent(duplicateCase(item, item.type))}><FilePlus2 size={18} /> Créer une nouvelle version</button>
+        </div>
+      )}
+      {item.pdfHash && <p className="seal">Empreinte SHA-256 du PDF : <code>{item.pdfHash}</code></p>}
     </section>
   );
 }
