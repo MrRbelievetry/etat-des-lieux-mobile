@@ -37,8 +37,15 @@ export async function compressImageFile(file: File): Promise<{ dataUrl: string; 
   const original = await fileToDataUrl(file);
   const image = new Image();
   const loaded = new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = reject;
+    const timeout = window.setTimeout(() => reject(new Error('Image loading timed out')), 250);
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error('Image loading failed'));
+    };
   });
   image.src = original;
 
