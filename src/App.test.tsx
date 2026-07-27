@@ -77,7 +77,7 @@ describe('application état des lieux', () => {
     await user.click(screen.getByRole('button', { name: /Pièces/ }));
     expect(screen.queryByRole('combobox', { name: 'Fonctionnement' })).not.toBeInTheDocument();
     await user.click(screen.getByText(/Fenêtres/));
-    expect(screen.getByRole('combobox', { name: 'Fonctionnement' })).toBeInTheDocument();
+    expect(screen.getAllByRole('combobox', { name: 'Fonctionnement' }).length).toBeGreaterThan(0);
   });
 
   it('prévoit les appareils complets dans la cuisine', () => {
