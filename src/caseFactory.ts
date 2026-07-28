@@ -8,6 +8,7 @@ const time = today.toTimeString().slice(0, 5);
 export function blankCase(type: InspectionType = 'entry'): InspectionCase {
   const lessorId = crypto.randomUUID();
   const tenantId = crypto.randomUUID();
+  const propertyId = crypto.randomUUID();
   const id = `EDL-${date.replaceAll('-', '')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const signatures: Signature[] = [
     { id: crypto.randomUUID(), personId: lessorId, name: '', role: 'Bailleur', acceptedRead: false, refused: false, refusalReason: '', observation: '' },
@@ -21,6 +22,7 @@ export function blankCase(type: InspectionType = 'entry'): InspectionCase {
     type,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    propertyId,
     title: type === 'entry' ? 'État des lieux d’entrée' : 'État des lieux de sortie',
     date,
     time,
@@ -42,6 +44,7 @@ export function blankCase(type: InspectionType = 'entry'): InspectionCase {
     keys: keyKinds.slice(0, 6).map(makeKey),
     rooms: ['Entrée', 'Séjour', 'Cuisine', 'Chambre', 'Salle de bains', 'WC'].map(makeRoom),
     observations: { lessor: '', tenant: '', disagreement: '', reservations: '', untested: '', plannedWorks: '', extra: '' },
+    lastStep: 0,
     signatures
   };
 }
@@ -65,6 +68,7 @@ export function demoCase(): InspectionCase {
     fridge.interiorCondition = 'bon état';
     fridge.cleanliness = 'Propre';
     fridge.functionStatus = 'fonctionne';
+    fridge.presenceStatus = 'included';
   }
   draft.observations.lessor = 'Dossier fictif fourni pour tester l’application.';
   return draft;
@@ -82,7 +86,7 @@ export function duplicateCase(source: InspectionCase, type = source.type): Inspe
   copy.finalizedAt = undefined;
   copy.pdfDataUrl = undefined;
   copy.pdfHash = undefined;
-  copy.rooms = copy.rooms.map((room) => ({ ...room, elements: room.elements.map(withElementDefaults) }));
+  copy.rooms = copy.rooms.map((room) => ({ ...room, included: room.included !== false, elements: room.elements.map(withElementDefaults) }));
   copy.signatures = copy.signatures.map((signature) => ({ ...signature, id: crypto.randomUUID(), acceptedRead: false, refused: false, imageDataUrl: undefined, signedAt: undefined }));
   return copy;
 }

@@ -1,4 +1,4 @@
-import type { AccessKey, ElementCategory, ElementCondition, FunctionStatus, Meter, Room, RoomElement } from './types';
+import type { AccessKey, ElementCategory, ElementCondition, ElementPresenceStatus, FunctionStatus, Meter, Room, RoomElement } from './types';
 
 export const conditionOptions: ElementCondition[] = [
   'neuf',
@@ -14,6 +14,11 @@ export const conditionOptions: ElementCondition[] = [
 ];
 
 export const functionStatusOptions: FunctionStatus[] = ['fonctionne', 'anomalie constatée', 'non testé', 'test impossible', 'non concerné'];
+export const presenceStatusOptions: Array<{ value: ElementPresenceStatus; label: string }> = [
+  { value: 'included', label: 'Inclus' },
+  { value: 'absent', label: 'Absent constaté' },
+  { value: 'hidden', label: 'Masqué' }
+];
 
 export const roomNames = [
   'Entrée',
@@ -147,12 +152,49 @@ export function inferIsTestable(label: string): boolean {
 export function withElementDefaults(element: RoomElement): RoomElement {
   const category = element.category ?? inferElementCategory(element.label);
   const isTestable = element.isTestable ?? inferIsTestable(element.label);
+  const hasExistingData = elementHasData(element);
+  const defaultPresenceStatus: ElementPresenceStatus = hasExistingData || category !== 'electromenager' ? 'included' : 'hidden';
   return {
     ...element,
     category,
     isTestable,
-    functionStatus: isTestable ? element.functionStatus ?? (element.tested === 'oui' ? 'fonctionne' : element.tested === 'non concerné' ? 'non concerné' : 'non testé') : 'non concerné'
+    presenceStatus: element.presenceStatus ?? defaultPresenceStatus,
+    functionStatus: isTestable ? element.functionStatus ?? (element.tested === 'oui' ? 'fonctionne' : element.tested === 'non concerné' ? 'non concerné' : 'non testé') : undefined
   };
+}
+
+export function elementHasData(element: RoomElement): boolean {
+  return Boolean(
+    element.description?.trim()
+    || element.observation?.trim()
+    || element.photos?.length
+    || element.brand?.trim()
+    || element.model?.trim()
+    || element.serialNumber?.trim()
+    || element.color?.trim()
+    || element.exteriorCondition
+    || element.interiorCondition
+    || element.cleanliness?.trim()
+    || element.accessories?.trim()
+    || element.defectDescription?.trim()
+    || element.exitObservation?.trim()
+    || element.condition === 'absent'
+    || element.condition === 'état moyen'
+    || element.condition === 'mauvais état'
+    || element.condition === 'hors service'
+  );
+}
+
+export function roomHasData(room: Room): boolean {
+  return Boolean(room.observations.trim() || room.photos.length || room.elements.some(elementHasData));
+}
+
+export function includedRooms(rooms: Room[]): Room[] {
+  return rooms.filter((room) => room.included !== false);
+}
+
+export function visibleElements(elements: RoomElement[]): RoomElement[] {
+  return elements.map(withElementDefaults).filter((element) => element.presenceStatus !== 'hidden');
 }
 
 export function makeElement(label: string): RoomElement {
@@ -178,6 +220,7 @@ export function makeRoom(name: string): Room {
   return {
     id: crypto.randomUUID(),
     name,
+    included: true,
     generalCondition: 'bon état',
     cleanliness: 'Correcte',
     observations: '',

@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf';
-import { withElementDefaults } from './constants';
+import { includedRooms, visibleElements, withElementDefaults } from './constants';
 import { sha256DataUrl } from './crypto';
-import type { InspectionCase, Meter, Photo, RoomElement, Signature } from './types';
+import type { AccessKey, InspectionCase, Meter, Photo, Room, RoomElement, Signature } from './types';
 
 const page = { left: 14, right: 196, top: 16, bottom: 282 };
 const seriousStates = new Set(['état moyen', 'mauvais état', 'hors service', 'absent']);
@@ -42,6 +42,18 @@ function formatFrenchDateTime(value?: string): string {
 
 export function isMeterFilled(meter: Meter): boolean {
   return compact([meter.number, meter.location, meter.index, meter.unit, meter.peakHours, meter.offPeakHours, meter.observation]).length > 0 || meter.photos.length > 0;
+}
+
+export function isKeyFilled(key: AccessKey): boolean {
+  return key.delivered > 0 || key.returned > 0 || Boolean(key.observation.trim());
+}
+
+export function pdfRooms(item: InspectionCase): Room[] {
+  return includedRooms(item.rooms);
+}
+
+function pdfElements(room: Room): RoomElement[] {
+  return visibleElements(room.elements);
 }
 
 function addHeader(doc: jsPDF, item: InspectionCase, title: string) {
@@ -89,18 +101,43 @@ function labeledLine(label: string, values: Array<string | undefined | null | fa
   return body ? `${label} : ${body}` : '';
 }
 
+function fitImage(photo: Photo, maxWidth: number, maxHeight: number) {
+  const ratio = photo.width && photo.height ? photo.width / photo.height : 4 / 3;
+  const width = ratio >= maxWidth / maxHeight ? maxWidth : maxHeight * ratio;
+  const height = ratio >= maxWidth / maxHeight ? maxWidth / ratio : maxHeight;
+  return { width, height };
+}
+
+function addPhoto(doc: jsPDF, item: InspectionCase, photo: Photo, label: string, y: number, index: number): number {
+  y = ensurePage(doc, item, y + 42, label);
+  const top = y - 38;
+  try {
+    const size = fitImage(photo, 58, 34);
+    doc.addImage(photo.dataUrl, 'JPEG', page.left + 2, top, size.width, size.height, undefined, 'FAST', photo.rotation);
+  } catch {
+    doc.text('Image non intégrable', page.left + 2, top + 16);
+  }
+  doc.setFontSize(8);
+  doc.text(doc.splitTextToSize(compact([`Photo ${index}`, photo.caption]).join(' - '), 108), page.left + 66, top + 6);
+  doc.setFontSize(9);
+  return y + 3;
+}
+
 function collectPhotos(item: InspectionCase): Array<{ photo: Photo; label: string }> {
   const photos: Array<{ photo: Photo; label: string }> = [];
-  item.meters.forEach((meter) => meter.photos.forEach((photo) => photos.push({ photo, label: `Compteur - ${meter.kind}` })));
-  item.rooms.forEach((room) => {
+  item.meters.filter(isMeterFilled).forEach((meter) => meter.photos.forEach((photo) => photos.push({ photo, label: `Compteur - ${meter.kind}` })));
+  pdfRooms(item).forEach((room) => {
     room.photos.forEach((photo) => photos.push({ photo, label: room.name }));
-    room.elements.forEach((element) => element.photos.forEach((photo) => photos.push({ photo, label: `${room.name} - ${element.label}` })));
+    pdfElements(room).forEach((element) => element.photos.forEach((photo) => photos.push({ photo, label: `${room.name} - ${element.label}` })));
   });
   return photos;
 }
 
 export function buildElementLines(rawElement: RoomElement, type: InspectionCase['type']): string[] {
   const element = withElementDefaults(rawElement);
+  if (element.presenceStatus === 'hidden') return [];
+  if (element.presenceStatus === 'absent') return [`${element.label} — Absent lors de l’état des lieux`];
+
   const lines = [
     labeledLine(element.label, [
       `état : ${element.condition}`,
@@ -109,8 +146,8 @@ export function buildElementLines(rawElement: RoomElement, type: InspectionCase[
     ])
   ];
 
-  if (element.isTestable) {
-    lines.push(labeledLine('Fonctionnement', [element.functionStatus || 'non testé', element.defectDescription && `défaut : ${element.defectDescription}`]));
+  if (element.isTestable && element.functionStatus && element.functionStatus !== 'non concerné') {
+    lines.push(labeledLine('Fonctionnement', [element.functionStatus, element.defectDescription && `défaut : ${element.defectDescription}`]));
   }
 
   if (element.category === 'electromenager') {
@@ -137,40 +174,72 @@ export function buildElementLines(rawElement: RoomElement, type: InspectionCase[
   return lines.filter(Boolean);
 }
 
-function addPhotoGrid(doc: jsPDF, item: InspectionCase, y: number, title: string): number {
-  const photos = collectPhotos(item);
-  if (!photos.length) return y;
-  y = section(doc, item, title, y);
-  const columns = 3;
-  const gap = 5;
-  const cellWidth = (page.right - page.left - gap * (columns - 1)) / columns;
-  const imageHeight = 34;
-  let index = 0;
+function addCoverCard(doc: jsPDF, title: string, lines: string[], x: number, y: number, width: number, height: number) {
+  doc.setDrawColor(214, 220, 226);
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(x, y, width, height, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text(title, x + 5, y + 8);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  lines.slice(0, 5).forEach((line, index) => doc.text(doc.splitTextToSize(line, width - 10), x + 5, y + 16 + index * 6));
+}
 
-  photos.forEach(({ photo, label }, photoIndex) => {
-    if (index % columns === 0) y = ensurePage(doc, item, y + imageHeight + 13, title);
-    const column = index % columns;
-    const x = page.left + column * (cellWidth + gap);
-    const top = y - imageHeight - 7;
-    doc.setDrawColor(225);
-    doc.roundedRect(x, top, cellWidth, imageHeight + 9, 1.5, 1.5);
+function addCoverPage(doc: jsPDF, item: InspectionCase) {
+  doc.setFillColor(24, 43, 58);
+  doc.rect(0, 0, 210, 58, 'F');
+  doc.setFillColor(231, 237, 242);
+  doc.rect(0, 58, 210, 239, 'F');
+  doc.setTextColor(255);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(26);
+  doc.text(item.type === 'entry' ? "ÉTAT DES LIEUX D'ENTRÉE" : 'ÉTAT DES LIEUX DE SORTIE', page.left, 28);
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Document comprenant constatations, photographies et signatures', page.left, 40);
+
+  if (item.lessorLogoDataUrl) {
     try {
-      const ratio = photo.width && photo.height ? photo.width / photo.height : 4 / 3;
-      const drawWidth = ratio >= cellWidth / imageHeight ? cellWidth : imageHeight * ratio;
-      const drawHeight = ratio >= cellWidth / imageHeight ? cellWidth / ratio : imageHeight;
-      const imageX = x + (cellWidth - drawWidth) / 2;
-      const imageY = top + (imageHeight - drawHeight) / 2;
-      doc.addImage(photo.dataUrl, 'JPEG', imageX, imageY, drawWidth, drawHeight, undefined, 'FAST', photo.rotation);
+      doc.addImage(item.lessorLogoDataUrl, 'PNG', 164, 18, 28, 18, undefined, 'FAST');
     } catch {
-      doc.text('Image non intégrable', x + 2, top + 18);
+      doc.setDrawColor(255);
+      doc.roundedRect(164, 18, 28, 18, 2, 2);
     }
-    doc.setFontSize(7);
-    const caption = compact([`Photo ${photoIndex + 1}`, label, photo.caption]).join(' - ');
-    doc.text(doc.splitTextToSize(caption, cellWidth - 4).slice(0, 2), x + 2, top + imageHeight + 4);
-    doc.setFontSize(9);
-    index += 1;
-  });
-  return y + 6;
+  }
+
+  doc.setTextColor(25, 34, 42);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(17);
+  doc.text(doc.splitTextToSize(item.address || 'Adresse non renseignée', 120), page.left, 76);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text(`Le ${formatFrenchDate(item.date)}${item.time ? ` à ${item.time}` : ''}`, page.left, 92);
+
+  const mainPhoto = item.mainPhotoDataUrl || pdfRooms(item).flatMap((room) => room.photos)[0]?.dataUrl;
+  if (mainPhoto) {
+    try {
+      doc.addImage(mainPhoto, 'JPEG', 132, 68, 58, 38, undefined, 'FAST');
+    } catch {
+      doc.setFillColor(238, 242, 246);
+      doc.roundedRect(132, 68, 58, 38, 2, 2, 'F');
+    }
+  } else {
+    doc.setFillColor(238, 242, 246);
+    doc.roundedRect(132, 68, 58, 38, 2, 2, 'F');
+    doc.setFontSize(8);
+    doc.text('Photo principale facultative', 140, 88);
+  }
+
+  addCoverCard(doc, 'Logement', compact([item.housingType, item.furnished ? 'Logement meublé' : 'Logement vide', item.surface && `${item.surface} m²`, item.roomCount && `${item.roomCount} pièce(s)`]), page.left, 120, 54, 42);
+  addCoverCard(doc, 'Bailleur', compact([personName(item.lessor), item.lessor.phone, item.lessor.email]), 78, 120, 54, 42);
+  addCoverCard(doc, 'Locataire(s)', item.tenants.filter(isTenantNamed).map(personName), 142, 120, 54, 42);
+  addCoverCard(doc, 'Dossier', [`Identifiant : ${item.id}`, `Version : ${item.version}`, item.status === 'finalized' ? 'Statut : finalisé' : 'Statut : brouillon'], page.left, 176, 182, 34);
+
+  doc.setTextColor(95);
+  doc.setFontSize(8);
+  doc.text('Les compteurs, clés, équipements, photographies détaillées et empreintes techniques figurent dans les pages suivantes.', page.left, 232);
+  doc.setTextColor(25);
 }
 
 function addSignatureCard(doc: jsPDF, item: InspectionCase, signature: Signature, x: number, y: number): void {
@@ -211,49 +280,40 @@ function addFooter(doc: jsPDF, item: InspectionCase): void {
 export async function generateInspectionPdf(item: InspectionCase): Promise<{ dataUrl: string; hash: string }> {
   const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
   doc.setFont('helvetica', 'normal');
-  addHeader(doc, item, 'État des lieux');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(22);
-  doc.text(item.type === 'entry' ? "État des lieux d'entrée" : 'État des lieux de sortie', page.left, 30);
-  doc.setFont('helvetica', 'normal');
+  addCoverPage(doc, item);
+  doc.addPage();
+  addHeader(doc, item, 'Informations générales');
   doc.setFontSize(10);
-  let y = 43;
-  y = writeText(doc, item, labeledLine('Adresse', [item.address || 'Non renseignée']), page.left, y);
-  y = writeText(doc, item, labeledLine('Date et heure', [formatFrenchDate(item.date), item.time]), page.left, y);
-  y = writeText(doc, item, labeledLine('Dossier', [item.id, `version ${item.version}`, item.status === 'finalized' ? 'finalisé' : 'brouillon']), page.left, y);
+  let y = page.top + 8;
 
-  y = section(doc, item, 'Logement', y);
+  y = section(doc, item, 'Logement et parties', y);
   y = writeText(doc, item, labeledLine('Description', [item.housingType, item.furnished ? 'meublé' : 'vide', item.surface && `${item.surface} m²`, item.roomCount && `${item.roomCount} pièce(s)`]), page.left, y);
-  y = writeText(doc, item, labeledLine('Situation', [item.building && `bâtiment ${item.building}`, item.floor && `étage ${item.floor}`, item.door && `porte ${item.door}`]), page.left, y);
-  y = writeText(doc, item, labeledLine('Bail', [item.leaseReference, item.leaseStartDate && `prise d'effet : ${formatFrenchDate(item.leaseStartDate)}`, item.dependencies && `dépendances : ${item.dependencies}`]), page.left, y);
-
-  y = section(doc, item, 'Parties', y);
+  y = writeText(doc, item, labeledLine('Situation', [item.building && `bâtiment ${item.building}`, item.floor && `étage ${item.floor}`, item.door && `porte ${item.door}`, item.dependencies && `dépendances : ${item.dependencies}`]), page.left, y);
   y = writeText(doc, item, labeledLine('Bailleur', [personName(item.lessor), item.lessor.address, item.lessor.phone, item.lessor.email]), page.left, y);
   item.tenants.filter(isTenantNamed).forEach((tenant) => {
     y = writeText(doc, item, labeledLine('Locataire', [personName(tenant), tenant.phone, tenant.email, item.type === 'exit' && tenant.newAddress && `nouvelle adresse : ${tenant.newAddress}`]), page.left, y);
   });
-  if (item.agent && compact([item.agent.name, item.agent.role, item.agent.address, item.agent.phone, item.agent.email]).length) {
-    y = writeText(doc, item, labeledLine('Mandataire', [item.agent.name, item.agent.role, item.agent.address, item.agent.phone, item.agent.email]), page.left, y);
-  }
 
   const meters = item.meters.filter(isMeterFilled);
   if (meters.length) {
     y = section(doc, item, 'Compteurs', y);
     meters.forEach((meter) => {
       y = writeText(doc, item, labeledLine(meter.kind, [meter.number && `n° ${meter.number}`, meter.location, meter.index && `index ${meter.index}${meter.unit ? ` ${meter.unit}` : ''}`, meter.peakHours && `HP ${meter.peakHours}`, meter.offPeakHours && `HC ${meter.offPeakHours}`, meter.observation]), page.left, y);
+      meter.photos.forEach((photo, index) => { y = addPhoto(doc, item, photo, meter.kind, y, index + 1); });
     });
   }
 
-  const keys = item.keys.filter((key) => key.delivered || key.returned || key.observation || key.condition);
+  const keys = item.keys.filter(isKeyFilled);
   if (keys.length) {
     y = section(doc, item, "Clés et moyens d'accès", y);
     keys.forEach((key) => {
-      y = writeText(doc, item, labeledLine(key.label, [`remis : ${key.delivered}`, `restitué : ${key.returned}`, key.condition && `état : ${key.condition}`, key.observation]), page.left, y);
+      y = writeText(doc, item, labeledLine(key.label, [`remis : ${key.delivered}`, `restitué : ${key.returned}`, key.observation]), page.left, y);
     });
   }
 
   y = section(doc, item, 'Pièces et éléments', y);
-  item.rooms.forEach((room) => {
+  let photoIndex = 1;
+  pdfRooms(item).forEach((room) => {
     y = ensurePage(doc, item, y + 12, room.name);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
@@ -262,18 +322,20 @@ export async function generateInspectionPdf(item: InspectionCase): Promise<{ dat
     doc.setFontSize(9);
     y += 6;
     y = writeText(doc, item, labeledLine('État général', [room.generalCondition, room.cleanliness && `propreté : ${room.cleanliness}`, room.observations]), page.left, y, page.right - page.left, room.name);
-    room.elements.forEach((element) => {
+    room.photos.forEach((photo) => { y = addPhoto(doc, item, photo, room.name, y, photoIndex); photoIndex += 1; });
+    pdfElements(room).forEach((element) => {
       buildElementLines(element, item.type).forEach((line) => {
         y = writeText(doc, item, line, page.left + 3, y, page.right - page.left - 3, room.name);
       });
+      element.photos.forEach((photo) => { y = addPhoto(doc, item, photo, element.label, y, photoIndex); photoIndex += 1; });
     });
   });
 
-  const anomalies = item.rooms.flatMap((room) => room.elements.map((element) => ({ room, element: withElementDefaults(element) }))).filter(({ element }) => seriousStates.has(element.condition) || element.functionStatus === 'anomalie constatée');
+  const anomalies = pdfRooms(item).flatMap((room) => pdfElements(room).map((element) => ({ room, element }))).filter(({ element }) => seriousStates.has(element.condition) || element.functionStatus === 'anomalie constatée' || element.presenceStatus === 'absent');
   if (anomalies.length) {
     y = section(doc, item, 'Synthèse des anomalies', y);
     anomalies.forEach(({ room, element }) => {
-      y = writeText(doc, item, `${room.name} - ${element.label} : ${compact([element.condition, element.description, element.observation, element.defectDescription]).join(' ; ')}`, page.left, y);
+      y = writeText(doc, item, `${room.name} - ${element.label} : ${compact([element.presenceStatus === 'absent' ? 'Absent lors de l’état des lieux' : element.condition, element.description, element.observation, element.defectDescription]).join(' ; ')}`, page.left, y);
     });
   }
 
@@ -292,8 +354,6 @@ export async function generateInspectionPdf(item: InspectionCase): Promise<{ dat
       y = writeText(doc, item, `${label} : ${value}`, page.left, y);
     });
   }
-
-  y = addPhotoGrid(doc, item, y, 'Photographies');
 
   const signatures = item.signatures.filter((signature) => signature.name.trim() || signature.imageDataUrl || signature.refused);
   if (signatures.length) {
@@ -320,9 +380,9 @@ export async function generateInspectionPdf(item: InspectionCase): Promise<{ dat
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
     y += 8;
-    photos.forEach(({ photo }, index) => {
+    photos.forEach(({ photo, label }, index) => {
       const size = photo.compressedBytes ? `${Math.round(photo.compressedBytes / 1024)} ko` : '';
-      y = writeText(doc, item, compact([`Photo ${index + 1}`, photo.caption, size, photo.hash && `SHA-256 ${photo.hash}`]).join(' - '), page.left, y, page.right - page.left, 'Annexe d’intégrité');
+      y = writeText(doc, item, compact([`Photo ${index + 1}`, label, photo.caption, size, photo.hash && `SHA-256 ${photo.hash}`]).join(' - '), page.left, y, page.right - page.left, 'Annexe d’intégrité');
     });
   }
 

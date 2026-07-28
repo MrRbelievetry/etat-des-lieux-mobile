@@ -1,7 +1,7 @@
 import { Download, FileCheck, FilePlus2, Printer, Save, Search, Share2, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { blankCase, demoCase, duplicateCase } from './caseFactory';
-import { conditionOptions, functionStatusOptions, makeElement, makeKey, makeMeter, makeRoom, roomNames, withElementDefaults } from './constants';
+import { conditionOptions, functionStatusOptions, includedRooms, makeElement, makeKey, makeMeter, makeRoom, presenceStatusOptions, roomHasData, roomNames, visibleElements, withElementDefaults } from './constants';
 import { generateInspectionPdf } from './pdf';
 import { PhotoInput } from './PhotoInput';
 import { deleteCase, downloadDataUrl, downloadText, exportCaseJson, listCases, saveCase } from './storage';
@@ -25,6 +25,8 @@ export function App() {
   const [step, setStep] = useState(0);
   const [query, setQuery] = useState('');
   const [online, setOnline] = useState(navigator.onLine);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [savedAt, setSavedAt] = useState('');
   const readonly = current?.status === 'finalized';
 
   async function refresh() {
@@ -45,10 +47,15 @@ export function App() {
   useEffect(() => {
     if (!current || current.status === 'finalized') return;
     const handle = setTimeout(() => {
-      void saveCase(current).then(refresh);
-    }, 350);
+      setSaveState('saving');
+      void saveCase({ ...current, lastStep: step }).then(() => {
+        setSavedAt(new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }));
+        setSaveState('saved');
+        return refresh();
+      }).catch(() => setSaveState('error'));
+    }, 650);
     return () => clearTimeout(handle);
-  }, [current]);
+  }, [current, step]);
 
   function update(patch: Partial<InspectionCase>) {
     if (!current || readonly) return;
@@ -76,12 +83,18 @@ export function App() {
     else downloadDataUrl(current.pdfDataUrl, `${current.id}.pdf`);
   }
 
-  const filtered = useMemo(() => cases.filter((item) => `${item.address} ${item.tenants.map(nameOf).join(' ')}`.toLowerCase().includes(query.toLowerCase())), [cases, query]);
+  const filtered = useMemo(() => cases.filter((item) => `${item.address} ${item.housingType} ${item.tenants.map(nameOf).join(' ')}`.toLowerCase().includes(query.toLowerCase())), [cases, query]);
+  const grouped = useMemo(() => {
+    const map = new Map<string, InspectionCase[]>();
+    filtered.forEach((item) => {
+      const key = item.address.trim().toLowerCase() || item.propertyId || item.id;
+      map.set(key, [...(map.get(key) || []), item]);
+    });
+    return [...map.entries()].map(([key, items]) => ({ key, items, latest: items[0] })).sort((a, b) => b.latest.updatedAt.localeCompare(a.latest.updatedAt));
+  }, [filtered]);
   const issues = current ? validateCase(current) : [];
 
   if (!current) {
-    const drafts = filtered.filter((item) => item.status === 'draft');
-    const finals = filtered.filter((item) => item.status === 'finalized');
     return (
       <main className="shell">
         <header className="topbar">
@@ -96,8 +109,7 @@ export function App() {
           <button className="button primary large" onClick={() => start('exit')}><FilePlus2 /> Nouvel état des lieux de sortie</button>
         </section>
         <label className="search"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher par adresse ou locataire" /></label>
-        <CaseList title="Brouillons" items={drafts} onOpen={(item) => { setCurrent(item); setStep(0); }} onDuplicate={(item) => setCurrent(duplicateCase(item, item.type))} onDelete={async (id) => { if (confirm('Supprimer ce brouillon ?')) { await deleteCase(id); await refresh(); } }} />
-        <CaseList title="États des lieux finalisés" items={finals} onOpen={(item) => { setCurrent(item); setStep(6); }} onDuplicate={(item) => setCurrent(duplicateCase(item, item.type))} />
+        <PropertyList groups={grouped} onOpen={(item) => { setCurrent(item); setStep(item.lastStep ?? 0); }} onDuplicate={(item) => setCurrent(duplicateCase(item, item.type))} onDelete={async (id) => { if (confirm('Supprimer ce brouillon ?')) { await deleteCase(id); await refresh(); } }} />
       </main>
     );
   }
@@ -113,7 +125,7 @@ export function App() {
             else void refresh();
           }}>← Accueil</button>
           <h1>{current.title || 'État des lieux'}</h1>
-          <p className="eyebrow">{current.id} · version {current.version} · {readonly ? 'finalisé en lecture seule' : 'brouillon sauvegardé automatiquement'} · {online ? 'en ligne' : 'hors connexion'}</p>
+          <p className="eyebrow">{current.id} · version {current.version} · {readonly ? 'finalisé en lecture seule' : saveState === 'saving' ? 'Enregistrement en cours...' : saveState === 'error' ? 'Erreur de sauvegarde - réessayer' : savedAt ? `Enregistré à ${savedAt}` : 'brouillon sauvegardé automatiquement'} · {online ? 'en ligne' : 'hors connexion'}</p>
         </div>
         {!readonly && <button className="button secondary" onClick={() => void saveCase(current).then(refresh)}><Save size={18} /> Enregistrer</button>}
       </header>
@@ -160,11 +172,45 @@ function CaseList({ title, items, onOpen, onDuplicate, onDelete }: { title: stri
   );
 }
 
+function PropertyList({ groups, onOpen, onDuplicate, onDelete }: { groups: Array<{ key: string; items: InspectionCase[]; latest: InspectionCase }>; onOpen: (item: InspectionCase) => void; onDuplicate: (item: InspectionCase) => void; onDelete: (id: string) => void }) {
+  return (
+    <section className="panel">
+      <h2>Biens immobiliers</h2>
+      <div className="caseGrid">
+        {groups.length === 0 && <p className="hint">Aucun bien enregistré.</p>}
+        {groups.map(({ key, items, latest }) => {
+          const drafts = items.filter((item) => item.status === 'draft');
+          const finals = items.filter((item) => item.status === 'finalized');
+          const mainDraft = drafts[0];
+          return (
+            <article className="caseCard" key={key}>
+              {latest.mainPhotoDataUrl && <img src={latest.mainPhotoDataUrl} alt="" />}
+              <strong>{latest.address || 'Adresse non renseignée'}</strong>
+              <span>{latest.housingType} · {latest.surface ? `${latest.surface} m²` : 'surface non renseignée'} · {latest.furnished ? 'meublé' : 'vide'}</span>
+              <small>{items.length} dossier(s) · {drafts.length ? 'brouillon en cours' : 'aucun brouillon'} · modifié le {new Date(latest.updatedAt).toLocaleDateString('fr-FR')}</small>
+              {mainDraft && <p className="hint">Un brouillon existe pour cette adresse. Vous pouvez le reprendre ou le dupliquer.</p>}
+              <div className="miniActions">
+                {mainDraft && <button onClick={() => onOpen(mainDraft)}>Reprendre le brouillon</button>}
+                <button onClick={() => onOpen(duplicateCase(latest, 'entry'))}>Nouvel état des lieux d’entrée</button>
+                <button onClick={() => onOpen(duplicateCase(latest, 'exit'))}>Nouvel état des lieux de sortie</button>
+                {finals[0] && <button onClick={() => onOpen(finals[0])}>Voir les documents</button>}
+                <button onClick={() => onDuplicate(latest)}>Dupliquer le bien</button>
+                {mainDraft && <button onClick={() => onDelete(mainDraft.id)}><Trash2 size={16} /></button>}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Field({ label, value, onChange, readonly, type = 'text' }: { label: string; value: string; onChange: (value: string) => void; readonly?: boolean; type?: string }) {
   return <label><span>{label}</span><input disabled={readonly} type={type} value={value} onChange={(event) => onChange(event.target.value)} /></label>;
 }
 
 function General({ item, update, readonly }: { item: InspectionCase; update: (patch: Partial<InspectionCase>) => void; readonly?: boolean }) {
+  const firstPhoto = item.rooms.flatMap((room) => room.photos).find(Boolean);
   return (
     <section className="panel">
       <h2>Informations générales</h2>
@@ -187,6 +233,8 @@ function General({ item, update, readonly }: { item: InspectionCase; update: (pa
         <Field label="Date de prise d’effet du bail" type="date" value={item.leaseStartDate} readonly={readonly} onChange={(leaseStartDate) => update({ leaseStartDate })} />
       </div>
       <label className="check"><input disabled={readonly} type="checkbox" checked={item.furnished} onChange={(event) => update({ furnished: event.target.checked })} /> Logement meublé</label>
+      {firstPhoto && !readonly && <button className="button secondary" onClick={() => update({ mainPhotoDataUrl: firstPhoto.dataUrl })}>Utiliser la première photo comme couverture PDF</button>}
+      {item.mainPhotoDataUrl && <p className="hint">Photo principale définie pour la couverture PDF.</p>}
     </section>
   );
 }
@@ -264,21 +312,42 @@ function MetersKeys({ item, update, readonly }: { item: InspectionCase; update: 
 }
 
 function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patch: Partial<InspectionCase>) => void; readonly?: boolean }) {
-  const [selected, setSelected] = useState(item.rooms[0]?.id);
-  const room = item.rooms.find((value) => value.id === selected) || item.rooms[0];
+  const [selected, setSelected] = useState(includedRooms(item.rooms)[0]?.id || item.rooms[0]?.id);
+  const [view, setView] = useState<'included' | 'available'>('included');
+  const roomsInView = view === 'included' ? includedRooms(item.rooms) : item.rooms.filter((value) => value.included === false);
+  const room = roomsInView.find((value) => value.id === selected) || roomsInView[0];
   const setRoom = (next: Room) => update({ rooms: item.rooms.map((value) => value.id === next.id ? next : value) });
+  const setRoomIncluded = (next: Room, included: boolean) => {
+    if (!included && roomHasData(next) && !confirm('Cette pièce contient déjà des données ou des photos. La désactiver ?')) return;
+    update({ rooms: item.rooms.map((value) => value.id === next.id ? { ...value, included } : value) });
+    setSelected(item.rooms.find((value) => value.id !== next.id && (included ? value.included === false : value.included !== false))?.id);
+  };
+  const moveRoom = (next: Room, direction: -1 | 1) => {
+    const index = item.rooms.findIndex((value) => value.id === next.id);
+    const target = index + direction;
+    if (target < 0 || target >= item.rooms.length) return;
+    const copy = [...item.rooms];
+    [copy[index], copy[target]] = [copy[target], copy[index]];
+    update({ rooms: copy });
+  };
   return (
     <section className="panel">
       <h2>Pièces</h2>
-      <div className="roomTabs">{item.rooms.map((value) => <button className={value.id === room?.id ? 'active' : ''} key={value.id} onClick={() => setSelected(value.id)}>{value.name}</button>)}</div>
+      <div className="segmented">
+        <button className={view === 'included' ? 'active' : ''} onClick={() => { setView('included'); setSelected(includedRooms(item.rooms)[0]?.id); }}>Pièces incluses</button>
+        <button className={view === 'available' ? 'active' : ''} onClick={() => { setView('available'); setSelected(item.rooms.find((value) => value.included === false)?.id); }}>Pièces disponibles</button>
+      </div>
+      <div className="roomTabs">{roomsInView.map((value) => <button className={value.id === room?.id ? 'active' : ''} key={value.id} onClick={() => setSelected(value.id)}>{value.name}</button>)}</div>
       {!readonly && (
         <div className="photoActions">
           <select aria-label="Pièce à ajouter" onChange={(event) => { if (event.target.value) update({ rooms: [...item.rooms, makeRoom(event.target.value)] }); }}>
             <option value="">Ajouter une pièce</option>
             {roomNames.map((name) => <option key={name}>{name}</option>)}
           </select>
-          {room && <button className="button secondary" onClick={() => update({ rooms: [...item.rooms, structuredClone({ ...room, id: crypto.randomUUID(), name: `${room.name} copie` })] })}>Dupliquer</button>}
-          {room && <button className="button secondary" onClick={() => update({ rooms: item.rooms.filter((value) => value.id !== room.id) })}>Supprimer</button>}
+          {room && <button className="button secondary" onClick={() => setRoomIncluded(room, room.included === false)}> {room.included === false ? 'Inclure cette pièce' : 'Désactiver cette pièce'}</button>}
+          {room && <button className="button secondary" onClick={() => moveRoom(room, -1)}>Monter</button>}
+          {room && <button className="button secondary" onClick={() => moveRoom(room, 1)}>Descendre</button>}
+          {room && <button className="button secondary" onClick={() => update({ rooms: [...item.rooms, structuredClone({ ...room, id: crypto.randomUUID(), name: `${room.name} copie`, included: true })] })}>Dupliquer</button>}
         </div>
       )}
       {room && (
@@ -289,7 +358,20 @@ function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patc
           <label><span>Observations générales</span><textarea disabled={readonly} value={room.observations} onChange={(event) => setRoom({ ...room, observations: event.target.value })} /></label>
           <PhotoInput photos={room.photos} roomId={room.id} readonly={readonly} onChange={(photos) => setRoom({ ...room, photos })} />
           <h3>Éléments</h3>
-          {room.elements.map((element) => <ElementEditor key={element.id} element={element} room={room} inspectionType={item.type} readonly={readonly} setRoom={setRoom} />)}
+          {visibleElements(room.elements).map((element) => <ElementEditor key={element.id} element={element} room={room} inspectionType={item.type} readonly={readonly} setRoom={setRoom} />)}
+          {room.elements.some((element) => withElementDefaults(element).presenceStatus === 'hidden') && (
+            <details>
+              <summary>Équipements disponibles masqués</summary>
+              <div className="caseGrid">
+                {room.elements.map(withElementDefaults).filter((element) => element.presenceStatus === 'hidden').map((element) => (
+                  <article className="caseCard" key={element.id}>
+                    <strong>{element.label}</strong>
+                    {!readonly && <button onClick={() => setRoom({ ...room, elements: room.elements.map((value) => value.id === element.id ? withElementDefaults({ ...element, presenceStatus: 'included' }) : value) })}>Activer</button>}
+                  </article>
+                ))}
+              </div>
+            </details>
+          )}
           {!readonly && <button className="button secondary" onClick={() => setRoom({ ...room, elements: [...room.elements, makeElement('Autre équipement')] })}>Ajouter un élément</button>}
         </article>
       )}
@@ -304,7 +386,11 @@ function ElementEditor({ element: rawElement, room, inspectionType, readonly, se
     <details>
       <summary>{element.label} · {element.condition}{element.isTestable && element.functionStatus ? ` · ${element.functionStatus}` : ''}</summary>
       <div className="grid two">
+        <label><span>Statut</span><select disabled={readonly} value={element.presenceStatus || 'included'} onChange={(event) => setElement({ presenceStatus: event.target.value as RoomElement['presenceStatus'], condition: event.target.value === 'absent' ? 'absent' : element.condition })}>{presenceStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <Field label="Désignation" value={element.label} readonly={readonly} onChange={(label) => setElement({ label })} />
+        {element.presenceStatus === 'absent' && <p className="hint">Cet équipement apparaîtra dans le PDF comme absent lors de l’état des lieux.</p>}
+        {element.presenceStatus !== 'absent' && (
+          <>
         <label><span>État</span><select disabled={readonly} value={element.condition} onChange={(event) => setElement({ condition: event.target.value as typeof element.condition })}>{conditionOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
         {element.category === 'electromenager' && (
           <>
@@ -321,6 +407,8 @@ function ElementEditor({ element: rawElement, room, inspectionType, readonly, se
         <label><span>Description précise</span><textarea required={['état moyen', 'mauvais état', 'hors service'].includes(element.condition)} disabled={readonly} value={element.description} onChange={(event) => setElement({ description: event.target.value })} placeholder="Ex. Deux trous d’environ 5 mm sur le mur côté fenêtre, à environ 1 mètre du sol." /></label>
         {element.isTestable && <label><span>Fonctionnement</span><select disabled={readonly} value={element.functionStatus || 'non testé'} onChange={(event) => setElement({ functionStatus: event.target.value as typeof element.functionStatus })}>{functionStatusOptions.map((option) => <option key={option}>{option}</option>)}</select></label>}
         {element.category === 'electromenager' && <Field label="Description du défaut" value={element.defectDescription || ''} readonly={readonly} onChange={(defectDescription) => setElement({ defectDescription })} />}
+          </>
+        )}
         <Field label="Observations" value={element.observation} readonly={readonly} onChange={(observation) => setElement({ observation })} />
       </div>
       {inspectionType === 'exit' && <Field label="Observations de sortie" value={element.exitObservation || ''} readonly={readonly} onChange={(exitObservation) => setElement({ exitObservation })} />}
@@ -330,7 +418,8 @@ function ElementEditor({ element: rawElement, room, inspectionType, readonly, se
 }
 
 function Summary({ item, issues, go }: { item: InspectionCase; issues: { section: string; message: string }[]; go: (step: number) => void }) {
-  const anomalies = item.rooms.flatMap((room) => room.elements.filter((element) => ['état moyen', 'mauvais état', 'hors service', 'absent'].includes(element.condition)).map((element) => `${room.name} - ${element.label} : ${element.condition}`));
+  const activeRooms = includedRooms(item.rooms);
+  const anomalies = activeRooms.flatMap((room) => visibleElements(room.elements).filter((element) => ['état moyen', 'mauvais état', 'hors service', 'absent'].includes(element.condition) || element.presenceStatus === 'absent').map((element) => `${room.name} - ${element.label} : ${element.presenceStatus === 'absent' ? 'absent constaté' : element.condition}`));
   return (
     <section className="panel">
       <h2>Synthèse avant signature</h2>
@@ -338,7 +427,7 @@ function Summary({ item, issues, go }: { item: InspectionCase; issues: { section
         <button onClick={() => go(0)}>Logement<br /><strong>{item.address || 'Adresse manquante'}</strong></button>
         <button onClick={() => go(1)}>Parties<br /><strong>{nameOf(item.lessor)} / {namedPeople(item.tenants).map(nameOf).join(', ')}</strong></button>
         <button onClick={() => go(2)}>Compteurs<br /><strong>{item.meters.length} compteur(s)</strong></button>
-        <button onClick={() => go(3)}>Pièces<br /><strong>{item.rooms.length} pièce(s)</strong></button>
+        <button onClick={() => go(3)}>Pièces<br /><strong>{activeRooms.length} pièce(s)</strong></button>
       </div>
       <h3>Anomalies recensées</h3>
       {anomalies.length ? anomalies.map((line) => <p key={line} className="warning">{line}</p>) : <p className="hint">Aucune anomalie importante détectée.</p>}

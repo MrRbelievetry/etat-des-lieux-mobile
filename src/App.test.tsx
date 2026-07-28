@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { blankCase, duplicateCase } from './caseFactory';
 import { makeElement, makeRoom } from './constants';
-import { buildElementLines, formatFrenchDate, generateInspectionPdf, isMeterFilled, isTenantNamed } from './pdf';
+import { buildElementLines, formatFrenchDate, generateInspectionPdf, isKeyFilled, isMeterFilled, isTenantNamed, pdfRooms } from './pdf';
 import { validateCase } from './validation';
 
 Object.defineProperty(window, 'open', { value: vi.fn(), writable: true });
@@ -112,20 +112,34 @@ describe('application état des lieux', () => {
     const oven = makeElement('Four');
     expect(buildElementLines(wall, 'entry').join('\n')).not.toContain('Fonctionnement');
     expect(buildElementLines(wall, 'entry').join('\n')).not.toContain('description : -');
-    expect(buildElementLines(oven, 'entry').join('\n')).toContain('Fonctionnement');
+    expect(buildElementLines({ ...oven, presenceStatus: 'included' }, 'entry').join('\n')).toContain('Fonctionnement');
+  });
+
+  it('ignore pièces désactivées et équipements masqués dans les helpers PDF', () => {
+    const item = blankCase('entry');
+    item.rooms[0].included = false;
+    expect(pdfRooms(item).some((room) => room.id === item.rooms[0].id)).toBe(false);
+    expect(buildElementLines({ ...makeElement('Four'), presenceStatus: 'hidden' }, 'entry')).toEqual([]);
+  });
+
+  it('affiche un équipement absent sans mention non concerné inutile', () => {
+    const absent = buildElementLines({ ...makeElement('Four'), presenceStatus: 'absent', condition: 'absent' }, 'entry').join('\n');
+    expect(absent).toContain('Absent lors de l’état des lieux');
+    expect(absent).not.toContain('non concerné');
   });
 
   it('filtre locataires vides, compteurs vides et dates françaises', () => {
     const item = blankCase('entry');
     expect(isTenantNamed(item.tenants[0])).toBe(false);
     expect(isMeterFilled(item.meters[0])).toBe(false);
+    expect(isKeyFilled(item.keys[0])).toBe(false);
     expect(formatFrenchDate('2026-07-27')).toContain('2026');
   });
 
   it('signale les appareils sans état intérieur ou extérieur', () => {
     const item = blankCase('entry');
     const kitchen = makeRoom('Cuisine');
-    kitchen.elements = [makeElement('Réfrigérateur')];
+    kitchen.elements = [{ ...makeElement('Réfrigérateur'), presenceStatus: 'included' }];
     item.rooms = [kitchen];
     expect(validateCase(item).some((issue) => issue.message.includes('état extérieur ou intérieur'))).toBe(true);
   });

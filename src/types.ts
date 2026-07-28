@@ -30,6 +30,7 @@ export type ElementCategory =
   | 'electromenager'
   | 'autre';
 export type FunctionStatus = 'fonctionne' | 'anomalie constatée' | 'non testé' | 'test impossible' | 'non concerné';
+export type ElementPresenceStatus = 'included' | 'absent' | 'hidden';
 
 export interface Person {
   id: string;
@@ -101,6 +102,7 @@ export interface RoomElement {
   isTestable?: boolean;
   category?: ElementCategory;
   functionStatus?: FunctionStatus;
+  presenceStatus?: ElementPresenceStatus;
   brand?: string;
   model?: string;
   serialNumber?: string;
@@ -121,6 +123,7 @@ export interface RoomElement {
 export interface Room {
   id: string;
   name: string;
+  included?: boolean;
   generalCondition: ElementCondition;
   cleanliness: string;
   observations: string;
@@ -182,4 +185,24 @@ export interface InspectionCase {
   };
   signatures: Signature[];
   sourceCaseId?: string;
+  propertyId?: string;
+  propertyUpdatedAt?: string;
+  lastStep?: number;
+  lastSavedAt?: string;
+  mainPhotoDataUrl?: string;
+  lessorLogoDataUrl?: string;
+}
+
+export interface PropertyRecord {
+  id: string;
+  address: string;
+  housingType: string;
+  furnished: boolean;
+  surface: string;
+  roomCount: string;
+  dependencies: string;
+  lessor: Lessor;
+  mainPhotoDataUrl?: string;
+  createdAt: string;
+  updatedAt: string;
 }

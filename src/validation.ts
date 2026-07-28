@@ -1,4 +1,4 @@
-import { withElementDefaults } from './constants';
+import { includedRooms, visibleElements } from './constants';
 import type { InspectionCase, Meter } from './types';
 
 const seriousStates = new Set(['état moyen', 'mauvais état', 'hors service']);
@@ -34,10 +34,10 @@ export function validateCase(item: InspectionCase): ValidationIssue[] {
     }
   });
 
-  item.rooms.forEach((room) => {
+  includedRooms(item.rooms).forEach((room) => {
     room.photos.filter((photo) => !photo.caption.trim()).forEach(() => issues.push({ section: 'rooms', message: `${room.name} contient une photo sans légende.` }));
-    room.elements.forEach((rawElement) => {
-      const element = withElementDefaults(rawElement);
+    visibleElements(room.elements).forEach((element) => {
+      if (element.presenceStatus === 'absent') return;
       if (seriousStates.has(element.condition) && !element.description.trim()) {
         issues.push({ section: 'rooms', message: `${room.name} - ${element.label} nécessite une description précise.` });
       }
