@@ -320,7 +320,7 @@ function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patc
   const setRoomIncluded = (next: Room, included: boolean) => {
     if (!included && roomHasData(next) && !confirm('Cette pièce contient déjà des données ou des photos. La désactiver ?')) return;
     update({ rooms: item.rooms.map((value) => value.id === next.id ? { ...value, included } : value) });
-    setSelected(item.rooms.find((value) => value.id !== next.id && (included ? value.included === false : value.included !== false))?.id);
+    setSelected(item.rooms.find((value) => value.id !== next.id && (included ? value.included === false : value.included !== false))?.id ?? '');
   };
   const moveRoom = (next: Room, direction: -1 | 1) => {
     const index = item.rooms.findIndex((value) => value.id === next.id);
@@ -334,8 +334,8 @@ function Rooms({ item, update, readonly }: { item: InspectionCase; update: (patc
     <section className="panel">
       <h2>Pièces</h2>
       <div className="segmented">
-        <button className={view === 'included' ? 'active' : ''} onClick={() => { setView('included'); setSelected(includedRooms(item.rooms)[0]?.id); }}>Pièces incluses</button>
-        <button className={view === 'available' ? 'active' : ''} onClick={() => { setView('available'); setSelected(item.rooms.find((value) => value.included === false)?.id); }}>Pièces disponibles</button>
+        <button className={view === 'included' ? 'active' : ''} onClick={() => { setView('included'); setSelected(includedRooms(item.rooms)[0]?.id ?? ''); }}>Pièces incluses</button>
+        <button className={view === 'available' ? 'active' : ''} onClick={() => { setView('available'); setSelected(item.rooms.find((value) => value.included === false)?.id ?? ''); }}>Pièces disponibles</button>
       </div>
       <div className="roomTabs">{roomsInView.map((value) => <button className={value.id === room?.id ? 'active' : ''} key={value.id} onClick={() => setSelected(value.id)}>{value.name}</button>)}</div>
       {!readonly && (
